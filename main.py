@@ -39,28 +39,53 @@ def load_history(
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id",
+            "SELECT id, role, content FROM messages WHERE session_id = ? ORDER BY id",
             (session_id,),
         )
         rows = cur.fetchall()
 
     loaded_messages: list[langchain_core.messages.AnyMessage] = []
-    for role, content in rows:
-        match role:
-            case "user":
-                loaded_messages.append(
-                    langchain_core.messages.HumanMessage(content=content)
-                )
-            case "assistant":
-                loaded_messages.append(
-                    langchain_core.messages.AIMessage(content=content)
-                )
-            case "system":
-                loaded_messages.append(
-                    langchain_core.messages.SystemMessage(content=content)
-                )
-            case _:
-                raise ValueError(f"Unknown message role: {role}")
+
+    if rows:
+        # Find the index of the last "compact" message, leave -1 when not found.
+        last_compact_idx = -1
+        for i in range(len(rows) - 1, -1, -1):  # Iterate backwards
+            if rows[i][1] == "compact":  # [1] is the role
+                last_compact_idx = i
+                break
+
+        start_idx = last_compact_idx if last_compact_idx != -1 else 0
+        for i in range(start_idx, len(rows)):
+            msg_id, role, content = rows[i][0], rows[i][1], rows[i][2]
+            match role:
+                case "user":
+                    loaded_messages.append(
+                        langchain_core.messages.HumanMessage(
+                            content=content, additional_kwargs={"db_id": msg_id}
+                        )
+                    )
+                case "assistant":
+                    loaded_messages.append(
+                        langchain_core.messages.AIMessage(
+                            content=content, additional_kwargs={"db_id": msg_id}
+                        )
+                    )
+                case "system":
+                    loaded_messages.append(
+                        langchain_core.messages.SystemMessage(
+                            content=content, additional_kwargs={"db_id": msg_id}
+                        )
+                    )
+                case "compact":
+                    loaded_messages.append(
+                        langchain_core.messages.HumanMessage(
+                            content=content,
+                            additional_kwargs={"db_id": msg_id, "is_compact": True},
+                        )
+                    )
+                case _:
+                    raise ValueError(f"Unknown message role: {role}")
+
     new_state: MidTermMemoryChatState = {
         "messages": loaded_messages,
         "session_id": session_id,
@@ -90,33 +115,107 @@ def save_messages(
 
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,))
-        existing_count = cur.fetchone()[0]
 
-        # If message count in state is greater than in DB, save the new ones
-        if len(messages) > existing_count:
-            new_messages = messages[existing_count:]
-            for msg in new_messages:
-                if isinstance(msg, langchain_core.messages.HumanMessage):
-                    role = "user"
-                elif isinstance(msg, langchain_core.messages.AIMessage):
-                    role = "assistant"
-                elif isinstance(msg, langchain_core.messages.SystemMessage):
-                    role = "system"
-                else:
-                    raise ValueError(f"Unknown message type: {type(msg)}")
+        cur.execute(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY id", (session_id,)
+        )
+        existing_db_ids = {row[0] for row in cur.fetchall()}
 
-                cur.execute(
-                    "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-                    (
-                        session_id,
-                        role,
-                        msg.content,
-                    ),
-                )
+        for msg in messages:
+            # Check if this message already exists in the database by looking at its db_id
+            msg_db_id = msg.additional_kwargs.get("db_id")
+            if msg_db_id is not None and msg_db_id in existing_db_ids:
+                continue
+
+            # Deal with compact message
+            if isinstance(
+                msg, langchain_core.messages.HumanMessage
+            ) and msg.additional_kwargs.get("is_compact", False):
+                role = "compact"
+            elif isinstance(msg, langchain_core.messages.HumanMessage):
+                role = "user"
+            elif isinstance(msg, langchain_core.messages.AIMessage):
+                role = "assistant"
+            elif isinstance(msg, langchain_core.messages.SystemMessage):
+                role = "system"
+            else:
+                raise ValueError(f"Unknown message type: {type(msg)}")
+
+            cur.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+                (
+                    session_id,
+                    role,
+                    msg.content,
+                ),
+            )
         conn.commit()
 
     return state
+
+
+def count_tokens(messages: list[langchain_core.messages.AnyMessage]) -> int:
+    # Rough approximation: 1 token -> 4 characters for English text
+    total_content = ""
+    for msg in messages:
+        total_content += str(msg.content)
+    return len(total_content) // 4
+
+
+def should_summarize(
+    state: MidTermMemoryChatState, token_threshold: int = 1000
+) -> typing.Literal["summarize", "continue"]:
+    token_count = count_tokens(state["messages"])
+    if token_count >= token_threshold:
+        return "summarize"
+    else:
+        return "continue"
+
+
+def summary_node(
+    state: MidTermMemoryChatState, llm: langchain_openai.ChatOpenAI
+) -> MidTermMemoryChatState:
+    # TODO: Implement a specific prompt for summarization
+    summary_prompt = "Please summarize the following conversation history:\\n\\n"
+    for msg in state["messages"]:
+        role = (
+            "User"
+            if isinstance(msg, langchain_core.messages.HumanMessage)
+            else "Assistant"
+        )
+        summary_prompt += f"{role}: {msg.content}\\n\\n"
+
+    summary_prompt += (
+        "\\nProvide a concise summary that captures the key points of the conversation."
+    )
+
+    # Create a temporary message to get the summary
+    summary_messages = [
+        langchain_core.messages.SystemMessage(
+            content="You are a helpful assistant that summarizes conversations."
+        ),
+        langchain_core.messages.HumanMessage(content=summary_prompt),
+    ]
+
+    summary_response = llm.invoke(summary_messages)
+
+    # Create a HumanMessage with is_compact flag in additional_kwargs
+    new_messages: list[langchain_core.messages.AnyMessage] = [
+        langchain_core.messages.HumanMessage(
+            content=summary_response.content, additional_kwargs={"is_compact": True}
+        )
+    ]
+
+    logger.info(
+        f"\\033[93mConversation summarized: {summary_response.content[:100]}...\\033[0m"
+    )  # Yellow
+
+    session_id = state["session_id"]
+    new_state: MidTermMemoryChatState = {
+        "messages": new_messages,
+        "session_id": session_id,
+    }
+    return new_state
 
 
 def user_input(state: MidTermMemoryChatState) -> MidTermMemoryChatState:
@@ -138,7 +237,7 @@ def should_continue(state: MidTermMemoryChatState) -> typing.Literal["continue",
 
 
 def construct_workflow(
-    db_path: pathlib.Path, llm: langchain_openai.ChatOpenAI
+    db_path: pathlib.Path, llm: langchain_openai.ChatOpenAI, token_threshold: int = 1000
 ) -> langgraph.graph.state.CompiledStateGraph:
     workflow = langgraph.graph.StateGraph(MidTermMemoryChatState)
     workflow.add_node("load_history", functools.partial(load_history, db_path=db_path))
@@ -151,6 +250,7 @@ def construct_workflow(
     workflow.add_node(
         "save_ai_messages", functools.partial(save_messages, db_path=db_path)
     )
+    workflow.add_node("summary_node", functools.partial(summary_node, llm=llm))
     workflow.add_node("should_continue", should_continue)
 
     workflow.set_entry_point("load_history")
@@ -158,8 +258,19 @@ def construct_workflow(
     workflow.add_edge("user_input", "save_user_messages")
     workflow.add_edge("save_user_messages", "call_model")
     workflow.add_edge("call_model", "save_ai_messages")
+
+    # Do we need a compaction now?
     workflow.add_conditional_edges(
         "save_ai_messages",
+        functools.partial(should_summarize, token_threshold=token_threshold),
+        {"summarize": "summary_node", "continue": "should_continue"},
+    )
+
+    workflow.add_edge("summary_node", "should_continue")
+
+    # Does the user still want to continue to talk with us?
+    workflow.add_conditional_edges(
+        "should_continue",
         should_continue,
         {"continue": "user_input", "end": langgraph.graph.END},
     )
