@@ -1,6 +1,7 @@
 import functools
 import os
 import sqlite3
+import sys
 import pathlib
 import typing
 import uuid
@@ -9,6 +10,7 @@ import langchain_openai
 import langgraph
 import langgraph.graph
 import langgraph.graph.state
+from loguru import logger
 
 
 def init_db(path: pathlib.Path) -> None:
@@ -73,6 +75,9 @@ def call_model(
     session_id = state["session_id"]
     response = llm.invoke(messages)
     messages.append(response)
+
+    logger.info(f"\033[96mAssistant: {response.content}\033[0m")  # Cyan
+
     new_state: MidTermMemoryChatState = {"messages": messages, "session_id": session_id}
     return new_state
 
@@ -115,16 +120,17 @@ def save_messages(
 
 
 def user_input(state: MidTermMemoryChatState) -> MidTermMemoryChatState:
-    user_message = input("Enter your message: ")
+    user_message = input("\nUser: ")
     session_id = state["session_id"]
     messages = state["messages"]
     messages.append(langchain_core.messages.HumanMessage(content=user_message))
+    logger.info(f"\033[92mUser: {user_message}\033[0m")  # Green
     new_state: MidTermMemoryChatState = {"messages": messages, "session_id": session_id}
     return new_state
 
 
 def should_continue(state: MidTermMemoryChatState) -> typing.Literal["continue", "end"]:
-    user_decision = input("Do you want to continue chatting? (y/n): ").strip().lower()
+    user_decision = input("\nContinue? (y/n): ").strip().lower()
     if user_decision in ["y", "yes"]:
         return "continue"
     else:
@@ -163,6 +169,10 @@ def construct_workflow(
 
 
 if __name__ == "__main__":
+    # Remove default logger
+    logger.remove()
+    logger.add(sys.stdout, format="{message}", level="INFO", colorize=True)
+
     db_path = pathlib.Path("./mid-term-memory-chat-history.db")
     init_db(db_path)
 
@@ -176,10 +186,15 @@ if __name__ == "__main__":
     session_id = str(uuid.uuid4())
     initial_state = MidTermMemoryChatState(messages=[], session_id=session_id)
 
+    logger.info("\033[95m=== Mid-Term Memory Chat Started ===\033[0m")  # Magenta
+    logger.info(
+        "\033[95mType your messages below. Press Ctrl+C to exit.\033[0m"
+    )  # Magenta
+
     try:
         result = app.invoke(initial_state)
-        print("Chat completed.")
+        logger.info("\033[95mChat completed.\033[0m")  # Magenta
     except KeyboardInterrupt:
-        print("\nChat interrupted by user.")
+        logger.info("\n\033[91mChat interrupted by user.\033[0m")  # Red
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
