@@ -13,6 +13,10 @@ import langgraph.graph.state
 from loguru import logger
 from dotenv import load_dotenv
 
+# 在文件开头添加自定义异常类
+class ExitConversationException(Exception):
+    """当用户输入结束指令时抛出的异常"""
+    pass
 
 def init_db(path: pathlib.Path) -> None:
     with sqlite3.connect(path) as conn:
@@ -321,15 +325,19 @@ When you are using compact - please focus on test output and code changes. Inclu
     return new_state
 
 
+# 修改 user_input 函数
 def user_input(state: MidTermMemoryChatState) -> MidTermMemoryChatState:
     user_message = input("\nUser: ")
+    # 检查用户是否输入了结束指令
+    if user_message.lower().strip() in ['n', 'no', '否']:
+        raise ExitConversationException("User requested to exit conversation")
+    
     session_id = state["session_id"]
     messages = state["messages"]
     messages.append(langchain_core.messages.HumanMessage(content=user_message))
     logger.info(f"\033[92mUser: {user_message}\033[0m")  # Green
     new_state: MidTermMemoryChatState = {"messages": messages, "session_id": session_id}
     return new_state
-
 
 def construct_workflow(
     db_path: pathlib.Path,
@@ -354,7 +362,8 @@ def construct_workflow(
     workflow.add_node(
         "summary_node", functools.partial(summary_node, summary_llm=summary_llm)
     )
-    workflow.add_node("should_summarize", should_summarize)
+    # 添加一个空操作节点作为工作流的终点
+    workflow.add_node("end_node", lambda state: state)
 
     workflow.set_entry_point("load_history")
     workflow.add_edge("load_history", "user_input")
@@ -362,20 +371,21 @@ def construct_workflow(
     workflow.add_edge("save_user_messages", "call_model")
     workflow.add_edge("call_model", "save_ai_messages")
 
-    # Do we need a compaction now?
+    # 条件边：如果需要总结则去summary_node，否则去end_node
     workflow.add_conditional_edges(
         "save_ai_messages",
         functools.partial(should_summarize, token_threshold=token_threshold),
-        {"summarize": "summary_node", "continue": "user_input"},
+        {"summarize": "summary_node", "continue": "end_node"},
     )
 
     workflow.add_edge("summary_node", "save_compact_messages")
-    workflow.add_edge("save_compact_messages", "user_input")
+    workflow.add_edge("save_compact_messages", "end_node")
 
     app = workflow.compile()
     return app
 
 
+# 修改主函数中的执行部分
 if __name__ == "__main__":
     # Initialize environment 
     load_dotenv()
@@ -401,10 +411,21 @@ if __name__ == "__main__":
         "\033[95mType your messages below. Press Ctrl+C to exit.\033[0m"
     )  # Magenta
 
+    # 修改主函数中的执行部分
     try:
-        result = app.invoke(initial_state, {"recursion_limit": 1000000})
-        logger.info("\033[95mChat completed.\033[0m")  # Magenta
+        while True:  # 外部循环控制多轮对话
+            try:
+                # 每次都创建新的初始状态（但会从数据库加载历史）
+                initial_state = MidTermMemoryChatState(messages=[], session_id=session_id)
+                
+                # 执行一轮对话（工作流内部不循环）
+                result = app.invoke(initial_state, {"recursion_limit": 100})  # 正常递归限制
+            except ExitConversationException:
+                # 当用户输入结束指令时，退出循环
+                break
     except KeyboardInterrupt:
-        logger.info("\n\033[91mChat interrupted by user.\033[0m")  # Red
+        logger.info("\n\033[91mChat interrupted by user.\033[0m")
     except Exception as e:
         logger.error(f"An error occurred: {e}")
+    
+    logger.info("\033[95mChat completed.\033[0m")
