@@ -11,6 +11,7 @@ import langgraph
 import langgraph.graph
 import langgraph.graph.state
 from loguru import logger
+from dotenv import load_dotenv
 
 
 def init_db(path: pathlib.Path) -> None:
@@ -149,6 +150,13 @@ def save_messages(
                     msg.content,
                 ),
             )
+            
+            # 获取新插入记录的ID并更新消息对象
+            new_id = cur.lastrowid
+            if new_id is not None:
+                msg.additional_kwargs["db_id"] = new_id
+                existing_db_ids.add(new_id)  # 添加到已存在ID集合中，防止同批次重复
+                
         conn.commit()
 
     return state
@@ -369,6 +377,8 @@ def construct_workflow(
 
 
 if __name__ == "__main__":
+    # Initialize environment 
+    load_dotenv()
     # Remove default logger
     logger.remove()
     logger.add(sys.stdout, format="{message}", level="INFO", colorize=True)
@@ -383,7 +393,7 @@ if __name__ == "__main__":
     )
     app = construct_workflow(db_path, llm, summary_llm=llm, token_threshold=500)
 
-    session_id = str(uuid.uuid4())
+    session_id = os.getenv("SESSION_ID", str(uuid.uuid4()))
     initial_state = MidTermMemoryChatState(messages=[], session_id=session_id)
 
     logger.info("\033[95m=== Mid-Term Memory Chat Started ===\033[0m")  # Magenta
