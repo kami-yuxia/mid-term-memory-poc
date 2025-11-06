@@ -384,7 +384,6 @@ def construct_workflow(
     app = workflow.compile()
     return app
 
-
 if __name__ == "__main__":
     # Initialize environment 
     load_dotenv()
@@ -412,25 +411,14 @@ if __name__ == "__main__":
 
     # 修改主函数中的执行部分
     try:
-        conversation_count = 0
         while True:  # 外部循环控制多轮对话
-            conversation_count += 1
-            logger.info(f"\033[95m--- 第 {conversation_count} 轮对话 ---\033[0m")
-            
             # 每次都创建新的初始状态（但会从数据库加载历史）
             initial_state = MidTermMemoryChatState(messages=[], session_id=session_id)
             
             # 执行一轮对话（工作流内部不循环）
             result = app.invoke(initial_state, {"recursion_limit": 100})  # 正常递归限制
             
-            # 询问用户是否继续
-            try:
-                continue_chat = input("\n是否继续对话？(直接回车继续，输入'n'或'no'退出): ").strip().lower()
-                if continue_chat in ['n', 'no', '否']:
-                    break
-            except (EOFError, KeyboardInterrupt):
-                break
-                
+    except ExitConversationException:
         logger.info("\033[95mChat completed.\033[0m")
     except KeyboardInterrupt:
         logger.info("\n\033[91mChat interrupted by user.\033[0m")
