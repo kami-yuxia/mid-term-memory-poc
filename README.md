@@ -54,3 +54,6 @@
     .quit
 
 2.优化对话框,不再询问是否对话,直接进入下一轮对话,user输入"n"/"no"/"否"或Ctrl+C可退出
+
+3.不再添加 end_node，直接使用 langgraph.graph.END
+

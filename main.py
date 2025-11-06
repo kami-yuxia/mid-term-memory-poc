@@ -345,6 +345,8 @@ def construct_workflow(
     summary_llm: langchain_openai.ChatOpenAI,
     token_threshold: int = 1000,
 ) -> langgraph.graph.state.CompiledStateGraph:
+    from langgraph.graph import END  # 导入 END 常量
+    
     workflow = langgraph.graph.StateGraph(MidTermMemoryChatState)
     workflow.add_node("load_history", functools.partial(load_history, db_path=db_path))
     workflow.add_node("user_input", user_input)
@@ -362,8 +364,7 @@ def construct_workflow(
     workflow.add_node(
         "summary_node", functools.partial(summary_node, summary_llm=summary_llm)
     )
-    # 添加一个空操作节点作为工作流的终点
-    workflow.add_node("end_node", lambda state: state)
+    # 注意：不再添加 end_node，直接使用 langgraph.graph.END
 
     workflow.set_entry_point("load_history")
     workflow.add_edge("load_history", "user_input")
@@ -371,15 +372,15 @@ def construct_workflow(
     workflow.add_edge("save_user_messages", "call_model")
     workflow.add_edge("call_model", "save_ai_messages")
 
-    # 条件边：如果需要总结则去summary_node，否则去end_node
+    # 条件边：如果需要总结则去summary_node，否则去END
     workflow.add_conditional_edges(
         "save_ai_messages",
         functools.partial(should_summarize, token_threshold=token_threshold),
-        {"summarize": "summary_node", "continue": "end_node"},
+        {"summarize": "summary_node", "continue": END},  # 使用 END 而不是 "end_node"
     )
 
     workflow.add_edge("summary_node", "save_compact_messages")
-    workflow.add_edge("save_compact_messages", "end_node")
+    workflow.add_edge("save_compact_messages", END)  # 使用 END 而不是 "end_node"
 
     app = workflow.compile()
     return app
@@ -419,8 +420,8 @@ if __name__ == "__main__":
             result = app.invoke(initial_state, {"recursion_limit": 100})  # 正常递归限制
             
     except ExitConversationException:
-        logger.info("\033[95mChat completed.\033[0m")
+        logger.info("\033[95mChat completed.\033[0m") # Magenta
     except KeyboardInterrupt:
-        logger.info("\n\033[91mChat interrupted by user.\033[0m")
+        logger.info("\n\033[91mChat interrupted by user.\033[0m") # Red
     except Exception as e:
         logger.error(f"An error occurred: {e}")
