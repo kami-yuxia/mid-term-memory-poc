@@ -23,6 +23,7 @@ from main import (
     load_history,
     save_messages,
     summary_node,
+    should_summarize
 )
 
 
@@ -35,6 +36,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
 
+# 设置最大 token 数量阈值
+max_tokens=8000
 
 # 初始化数据库
 db_path = pathlib.Path("./mid-term-memory-chat-history.db")
@@ -60,7 +63,6 @@ def construct_api_workflow():
     workflow = StateGraph(MidTermMemoryChatState)
 
     # 添加节点
-    # 注意：我们需要使用 functools.partial 来传递 db_path 参数给这些函数
     workflow.add_node("load_history", partial(load_history, db_path=db_path))
     workflow.add_node("call_model", partial(call_model, llm=llm))
     workflow.add_node("save_messages", partial(save_messages, db_path=db_path))
@@ -70,7 +72,14 @@ def construct_api_workflow():
     workflow.set_entry_point("load_history")
     workflow.add_edge("load_history", "call_model")
     workflow.add_edge("call_model", "save_messages")
-    workflow.add_edge("save_messages", "summary_node")
+    
+    # 添加条件边，只有达到阈值才压缩
+    workflow.add_conditional_edges(
+        "save_messages",
+        partial(should_summarize, token_threshold=max_tokens),
+        {"summarize": "summary_node", "continue": END},
+    )
+    
     workflow.add_edge("summary_node", END)
 
     return workflow.compile()

@@ -175,7 +175,7 @@ def count_tokens(messages: list[langchain_core.messages.AnyMessage]) -> int:
 
 
 def should_summarize(
-    state: MidTermMemoryChatState, token_threshold: int = 1000
+    state: MidTermMemoryChatState, token_threshold: int = 5000
 ) -> typing.Literal["summarize", "continue"]:
     token_count = count_tokens(state["messages"])
     if token_count >= token_threshold:
@@ -400,7 +400,7 @@ if __name__ == "__main__":
     llm = langchain_openai.ChatOpenAI(
         model=model_name, temperature=0.7, base_url=base_url
     )
-    app = construct_workflow(db_path, llm, summary_llm=llm, token_threshold=500)
+    app = construct_workflow(db_path, llm, summary_llm=llm, token_threshold=8000)
 
     session_id = os.getenv("SESSION_ID", str(uuid.uuid4()))
     initial_state = MidTermMemoryChatState(messages=[], session_id=session_id)

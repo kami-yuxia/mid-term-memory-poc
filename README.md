@@ -57,3 +57,22 @@
 
 3.不再添加 end_node，直接使用 langgraph.graph.END
 
+### 2025.11.5
+1.修改了count_tokens函数,使用tiktoken准确计算tokens
+
+2.增大token_threshold到8000
+
+3.修改了server.py的工作流,save_messages节点添加了条件边,只有达到阈值才压缩,否则END进入下一轮对话
+
+4.根据llmtest,写了一个测试脚本fixed_encoding_test.py
+
+问题:
+1.API16000tokens报错,说输入过长,直接调用openai的api却可以,32000tokens才报错,可能和文本格式有关,还要api的客户端不同,前者是ChatOpenAI后者是AsyncOpenAI
+
+    LangChain 的消息封装增加了额外开销
+    工作流状态管理带来了额外负担
+    客户端实现差异导致不同的请求处理
+
+2.明明数据库有16000tokens的回复,为啥图像显示0分
+
+3.为什么测试结果只有0分和10分
